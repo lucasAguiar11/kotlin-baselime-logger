@@ -36,6 +36,7 @@ material = { group = "com.google.android.material", name = "material", version.r
 converter-gson = { module = "com.squareup.retrofit2:converter-gson", version.ref = "converterGson" }
 gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
 retrofit = { module = "com.squareup.retrofit2:retrofit", version.ref = "retrofit" }
+desugarJdkLibs = "com.android.tools:desugar_jdk_libs:2.1.5"
 
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" }

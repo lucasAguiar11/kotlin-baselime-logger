@@ -40,12 +40,6 @@ object LoggerUtil {
         return sb.toString()
     }
 
-    fun debug(message: String) {
-        if (BaselimeConfig.getIsDebug()) {
-            Log.d("[DEBUG-KBS]", message)
-        }
-    }
-
     fun Any.toMap(): Map<String, Any> {
         return this::class.java.declaredFields.associate { field ->
             field.isAccessible = true

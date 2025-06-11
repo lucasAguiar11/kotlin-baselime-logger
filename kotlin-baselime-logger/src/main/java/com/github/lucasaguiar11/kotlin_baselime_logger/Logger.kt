@@ -2,207 +2,249 @@ package com.github.lucasaguiar11.kotlin_baselime_logger
 
 import android.util.Log
 import com.github.lucasaguiar11.kotlin_baselime_logger.LoggerUtil.toMap
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers.IO
-import kotlinx.coroutines.launch
-import java.util.PriorityQueue
-import java.util.Timer
-import java.util.TimerTask
+import io.opentelemetry.api.common.AttributeKey
+import io.opentelemetry.api.common.Attributes
+import io.opentelemetry.api.logs.Logger as OtelLogger
+import io.opentelemetry.api.logs.Severity
+import java.util.concurrent.TimeUnit
 
 object Logger {
 
-    private val logQueue = PriorityQueue<LogEvent>(1, compareBy {
-        it.timestamp
-    })
+    private var otelLogger: OtelLogger? = null
+    private var isInitialized = false
 
-    private val batchQueue = PriorityQueue<LogEvent>(1, compareBy {
-        it.timestamp
-    })
-
-
-    private var timerCreated = false
-
-    init {
-        LoggerUtil.debug("Logger: init (timer = $timerCreated)")
-        if (!timerCreated) {
-            Timer().schedule(object : TimerTask() {
-                override fun run() {
-                    LoggerUtil.debug("TimerTask: processLogQueue")
-                    processUniqueLogQueue()
-                }
-            }, 0, BaselimeConfig.getTimeDelay())
-            timerCreated = true
-        }
-
-    }
-
-    private fun sendLogsAsync() {
-        val toSend = batchQueue.toList()
-        CoroutineScope(IO).launch {
-            val logService = BaselimeApi()
-            LoggerUtil.debug("processLogQueue: sendLogs")
-            try {
-                logService.sendLogs(toSend)
-            } catch (e: Exception) {
-                println("Error sending logs: ${e.message}")
-                LoggerUtil.debug("Error sending logs: ${e.message}")
-            }
-        }
-        batchQueue.clear()
-    }
-
-    private fun processUniqueLogQueue() {
-
+    fun initialize() {
         try {
-            while (logQueue.isNotEmpty() && batchQueue.size < BaselimeConfig.getBatchQueueSize()) {
-                LoggerUtil.debug("processLogQueue: logQueue.size = ${logQueue.size} - batchQueue.size = ${batchQueue.size}")
-                val logEvent = logQueue.poll()
-                if (logEvent == null) {
-                    LoggerUtil.debug("processLogQueue: poll: logEvent is null")
-                    break
-                }
+            val loggerProvider = OpenTelemetryConfig.getLoggerProvider()
+            otelLogger = loggerProvider?.get("kotlin-otel-logger")
+            isInitialized = true
 
-                LoggerUtil.debug("processLogQueue: poll: $logEvent")
-                batchQueue.add(logEvent)
-            }
-
-            if (batchQueue.isNotEmpty()) {
-                LoggerUtil.debug("processUniqueLogQueue: batchQueue.size = ${batchQueue.size}")
-                sendLogsAsync()
+            if (OpenTelemetryConfig.isDebugEnabled()) {
+                println("OtelLogger initialized successfully")
             }
         } catch (e: Exception) {
-            println("Error processing log queue: ${e.message}")
-            LoggerUtil.debug("Error processing log queue: ${e.message}")
+            if (OpenTelemetryConfig.isDebugEnabled()) {
+                println("Failed to initialize OtelLogger: ${e.message}")
+            }
+            isInitialized = false
         }
     }
 
-    private fun addEventToQueue(logs: LogEvent) {
-        try {
-            LoggerUtil.debug("sendLogsAsync: $logs")
-            logQueue.add(logs)
-        } catch (e: InterruptedException) {
-            println("Error adding log to queue: ${e.message}")
+    private fun mapLoggerLevelToSeverity(level: LoggerLevel): Severity {
+        return when (level) {
+            LoggerLevel.TRACE -> Severity.TRACE
+            LoggerLevel.DEBUG -> Severity.DEBUG
+            LoggerLevel.INFO -> Severity.INFO
+            LoggerLevel.WARN -> Severity.WARN
+            LoggerLevel.ERROR -> Severity.ERROR
         }
     }
 
-    private fun makeEvent(
-        level: LoggerLevel,
+    private fun createAttributes(
+        tag: String?,
         data: Map<String, Any>?,
-        message: String,
-        tag: String,
         duration: Long?,
-        throwable: Throwable? = null,
-        obj: Any? = null,
-        requestId: String? = null
-    ): LogEvent {
-        LoggerUtil.debug("makeEvent: $level - $message")
+        requestId: String?,
+        error: String?
+    ): Attributes {
+        val attributesBuilder = Attributes.builder()
 
-        var innerData =
-            data?.let { BaselimeConfig.getDefaultData()?.plus(it) }
-                ?: BaselimeConfig.getDefaultData()
+        try {
+            tag?.let {
+                attributesBuilder.put(AttributeKey.stringKey("logger.name"), it)
+            }
 
-        val map = obj?.toMap() ?: emptyMap()
-        innerData = innerData?.plus(map) ?: map
+            duration?.let {
+                attributesBuilder.put(AttributeKey.longKey("duration_ms"), it)
+            }
 
-        return LogEvent(
-            level = level,
-            message,
-            namespace = tag,
-            data = innerData,
-            duration = duration,
-            error = LoggerUtil.getError(throwable),
-            requestId = requestId
-        )
+            requestId?.let {
+                attributesBuilder.put(AttributeKey.stringKey("request_id"), it)
+            }
+
+            error?.let {
+                attributesBuilder.put(AttributeKey.stringKey("exception.message"), it)
+            }
+
+            // Adiciona dados customizados com tratamento de erro
+            data?.forEach { (key, value) ->
+                try {
+                    when (value) {
+                        is String -> attributesBuilder.put(AttributeKey.stringKey(key), value)
+                        is Long -> attributesBuilder.put(AttributeKey.longKey(key), value)
+                        is Double -> attributesBuilder.put(AttributeKey.doubleKey(key), value)
+                        is Boolean -> attributesBuilder.put(AttributeKey.booleanKey(key), value)
+                        is Int -> attributesBuilder.put(AttributeKey.longKey(key), value.toLong())
+                        is Float -> attributesBuilder.put(
+                            AttributeKey.doubleKey(key),
+                            value.toDouble()
+                        )
+
+                        else -> attributesBuilder.put(AttributeKey.stringKey(key), value.toString())
+                    }
+                } catch (e: Exception) {
+                    if (OpenTelemetryConfig.isDebugEnabled()) {
+                        println("Warning: Could not add attribute $key=$value: ${e.message}")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            if (OpenTelemetryConfig.isDebugEnabled()) {
+                println("Error creating attributes: ${e.message}")
+            }
+        }
+
+        return attributesBuilder.build()
     }
 
-    fun i(
+    private fun sendLog(
+        level: LoggerLevel,
         tag: String,
         message: String,
         data: Map<String, Any>? = null,
-        duration: Long? = null,
         obj: Any? = null,
+        duration: Long? = null,
+        throwable: Throwable? = null,
         requestId: String? = null
     ) {
-        LoggerUtil.debug("i: $tag - $message")
-        val event = makeEvent(
-            LoggerLevel.INFO,
-            data,
-            message,
-            tag,
-            duration,
-            obj = obj,
-            requestId = requestId
-        )
-        addEventToQueue(event)
-        Log.i(tag, message)
+        if (!isInitialized) {
+            if (OpenTelemetryConfig.isDebugEnabled()) {
+                println("OtelLogger not initialized, skipping log")
+            }
+            return
+        }
+
+        try {
+            otelLogger?.let { logger ->
+
+                var innerData = data?.let { OpenTelemetryConfig.getDefaultData()?.plus(it) }
+                    ?: OpenTelemetryConfig.getDefaultData()
+
+                val map = obj?.toMap() ?: emptyMap()
+                innerData = innerData?.plus(map)
+
+                val error = throwable?.let { getErrorString(it) }
+                val attributes = createAttributes(tag, innerData, duration, requestId, error)
+
+                val logRecordBuilder = logger.logRecordBuilder()
+                    .setTimestamp(getCurrentTimestamp(), TimeUnit.MILLISECONDS)
+                    .setSeverity(mapLoggerLevelToSeverity(level))
+                    .setBody(message)
+                    .setAllAttributes(attributes)
+
+                throwable?.let {
+                    // Adiciona informações da exception como atributos adicionais
+                    try {
+                        val exceptionAttributes = attributes.toBuilder()
+                            .put(AttributeKey.stringKey("exception.type"), it.javaClass.simpleName)
+                            .put(
+                                AttributeKey.stringKey("exception.stacktrace"),
+                                it.stackTraceToString()
+                            )
+                            .build()
+                        logRecordBuilder.setAllAttributes(exceptionAttributes)
+                    } catch (e: Exception) {
+                        if (OpenTelemetryConfig.isDebugEnabled()) {
+                            println("Error adding exception attributes: ${e.message}")
+                        } else {
+
+                        }
+                    }
+                }
+
+                logRecordBuilder.emit()
+
+                if (OpenTelemetryConfig.isDebugEnabled()) {
+                    println("OpenTelemetry log sent: $level - $tag - $message")
+                }
+            }
+        } catch (e: Exception) {
+            if (OpenTelemetryConfig.isDebugEnabled()) {
+                println("Error sending log to OpenTelemetry: ${e.message}")
+            }
+        }
     }
 
-    fun e(
+    private fun getCurrentTimestamp(): Long {
+        return System.currentTimeMillis()
+    }
+
+    private fun getErrorString(throwable: Throwable): String {
+        return "${throwable.javaClass.simpleName}: ${throwable.message}"
+    }
+
+    // Métodos públicos de logging
+    fun t(
         tag: String,
         message: String,
         data: Map<String, Any>? = null,
-        duration: Long? = null,
-        throwable: Throwable? = null,
         obj: Any? = null,
+        duration: Long? = null,
         requestId: String? = null
     ) {
-        LoggerUtil.debug("e: $tag - $message")
-        val event = makeEvent(
-            LoggerLevel.ERROR,
-            data,
-            message,
-            tag,
-            duration,
-            throwable,
-            obj,
-            requestId = requestId
-        )
-        addEventToQueue(event)
-        Log.e(tag, message, throwable)
+        sendLog(LoggerLevel.TRACE, tag, message, data, obj, duration, null, requestId)
+        Log.v(tag, message)
     }
 
     fun d(
         tag: String,
         message: String,
         data: Map<String, Any>? = null,
-        duration: Long? = null,
         obj: Any? = null,
+        duration: Long? = null,
         requestId: String? = null
     ) {
-        LoggerUtil.debug("d: $tag - $message")
-        val event = makeEvent(
-            LoggerLevel.DEBUG,
-            data,
-            message,
-            tag,
-            duration,
-            obj = obj,
-            requestId = requestId
-        )
-        addEventToQueue(event)
+        sendLog(LoggerLevel.DEBUG, tag, message, data, obj, duration, null, requestId)
         Log.d(tag, message)
+    }
+
+    fun i(
+        tag: String,
+        message: String,
+        data: Map<String, Any>? = null,
+        obj: Any? = null,
+        duration: Long? = null,
+        requestId: String? = null
+    ) {
+        sendLog(LoggerLevel.INFO, tag, message, data, obj, duration, null, requestId)
+        Log.i(tag, message)
     }
 
     fun w(
         tag: String,
         message: String,
         data: Map<String, Any>? = null,
-        duration: Long? = null,
         obj: Any? = null,
+        duration: Long? = null,
+        throwable: Throwable? = null,
         requestId: String? = null
     ) {
-        LoggerUtil.debug("w: $tag - $message")
-        val event = makeEvent(
-            LoggerLevel.WARN,
-            data,
-            message,
-            tag,
-            duration,
-            obj = obj,
-            requestId = requestId
-        )
-        addEventToQueue(event)
-        Log.w(tag, message)
+        sendLog(LoggerLevel.WARN, tag, message, data, obj, duration, throwable, requestId)
+        if (throwable != null) {
+            Log.w(tag, message, throwable)
+        } else {
+            Log.w(tag, message)
+        }
     }
 
+    fun e(
+        tag: String,
+        message: String,
+        data: Map<String, Any>? = null,
+        obj: Any? = null,
+        duration: Long? = null,
+        throwable: Throwable? = null,
+        requestId: String? = null
+    ) {
+        val mergedData = data?.toMutableMap() ?: mutableMapOf()
+        obj?.let {
+            mergedData["object"] = it.toMap()
+        }
+        sendLog(LoggerLevel.ERROR, tag, message, data, obj, duration, throwable, requestId)
+        if (throwable != null) {
+            Log.e(tag, message, throwable)
+        } else {
+            Log.e(tag, message)
+        }
+    }
 }

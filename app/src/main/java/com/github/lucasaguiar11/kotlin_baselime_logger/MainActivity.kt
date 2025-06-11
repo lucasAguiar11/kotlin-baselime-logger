@@ -10,6 +10,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
+import com.github.lucasaguiar11.kotlin_baselime_logger.LoggerUtil.toMap
 import com.github.lucasaguiar11.kotlin_baselime_logger.ui.theme.KotlinbaselimeloggerTheme
 import java.util.UUID
 
@@ -18,21 +19,16 @@ data class User(val name: String, val age: Int)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
 
-        BaselimeConfig.new(
-            baseUrl = BuildConfig.BASE_URL,
-            apiKey = BuildConfig.API_KEY,
-            serviceName = "kotlin-baselime-logger-sample",
-            defaultData = mapOf(
-                "app_version" to BuildConfig.VERSION_NAME,
-                "build_type" to BuildConfig.BUILD_TYPE,
-                "serial_number" to "SN1234567",
-                "value" to 100
-            ),
-            isDebug = true
+        OpenTelemetryConfig.configure(
+            endpoint = "http://srv574063.hstgr.cloud:4517",
+            serviceName = "kotlin-otel-logger-sample",
+            serviceVersion = BuildConfig.VERSION_NAME,
+            isDebug = true,
         )
 
         val user = User("Lucas", 30)
-        Logger.i("MainActivity", "onCreate", obj = user)
+
+        Logger.i("MainActivity", "onCreate user", obj = user)
 
         Logger.i(
             "MainActivity",

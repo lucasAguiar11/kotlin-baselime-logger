@@ -38,6 +38,8 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
+
+        isCoreLibraryDesugaringEnabled = true // Necessário para usar OpenTelemetry
     }
     kotlinOptions {
         jvmTarget = "1.8"
@@ -77,4 +79,5 @@ dependencies {
 
 //    implementation(libs.kotlin.baselime.logger)
     implementation(project(":kotlin-baselime-logger"))
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 }
