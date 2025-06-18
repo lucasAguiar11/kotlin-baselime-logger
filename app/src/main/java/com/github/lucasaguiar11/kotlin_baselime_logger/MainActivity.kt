@@ -10,7 +10,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
-import com.github.lucasaguiar11.kotlin_baselime_logger.LoggerUtil.toMap
 import com.github.lucasaguiar11.kotlin_baselime_logger.ui.theme.KotlinbaselimeloggerTheme
 import java.util.UUID
 
@@ -20,10 +19,13 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
 
         OpenTelemetryConfig.configure(
-            endpoint = "http://srv574063.hstgr.cloud:4517",
+            endpoint = "https://ingest.us.signoz.cloud:443",
             serviceName = "kotlin-otel-logger-sample",
             serviceVersion = BuildConfig.VERSION_NAME,
             isDebug = true,
+            headers = mapOf(
+                "signoz-ingestion-key" to "x"
+            )
         )
 
         val user = User("Lucas", 30)

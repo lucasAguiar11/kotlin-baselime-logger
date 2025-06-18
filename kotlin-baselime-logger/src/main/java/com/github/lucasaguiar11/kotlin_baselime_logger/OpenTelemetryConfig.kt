@@ -7,7 +7,9 @@ import io.opentelemetry.sdk.logs.SdkLoggerProvider
 import io.opentelemetry.sdk.logs.export.BatchLogRecordProcessor
 import io.opentelemetry.sdk.resources.Resource
 import io.opentelemetry.semconv.resource.attributes.ResourceAttributes
+import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.X509TrustManager
 
 object OpenTelemetryConfig {
     private var openTelemetry: OpenTelemetry? = null
@@ -21,10 +23,11 @@ object OpenTelemetryConfig {
         endpoint: String,
         serviceName: String = "kotlin-otel-logger",
         serviceVersion: String = "1.0.0",
+        environment: String = "production",
         headers: Map<String, String> = emptyMap(),
         batchTimeoutSeconds: Long = 5L,
-        maxBatchSize: Int = 256, // Reduzido para melhor compatibilidade
-        maxQueueSize: Int = 1024, // Reduzido para melhor compatibilidade
+        maxBatchSize: Int = 256,
+        maxQueueSize: Int = 1024,
         isDebug: Boolean = false,
         defaultData: Map<String, Any>? = null,
 
@@ -41,13 +44,32 @@ object OpenTelemetryConfig {
 
             this.defaultData = defaultData ?: emptyMap()
 
-            // Cria resource de forma mais simples
             val resourceBuilder = Resource.builder()
             resourceBuilder.put(ResourceAttributes.SERVICE_NAME, serviceName)
             resourceBuilder.put(ResourceAttributes.SERVICE_VERSION, serviceVersion)
+            resourceBuilder.put(ResourceAttributes.DEPLOYMENT_ENVIRONMENT, environment)
+
             val resource = resourceBuilder.build()
 
             if (isDebug) println("Resource created for service: $serviceName")
+
+            val sslContext = javax.net.ssl.SSLContext.getInstance("TLS")
+            val trustManager = object : X509TrustManager {
+                override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+                override fun checkClientTrusted(
+                    certs: Array<X509Certificate>,
+                    authType: String
+                ) {
+                }
+
+                override fun checkServerTrusted(
+                    certs: Array<X509Certificate>,
+                    authType: String
+                ) {
+                }
+            }
+            // Inicializando o SSLContext antes de usá-lo
+            sslContext.init(null, arrayOf(trustManager), null)
 
             // Cria exporter com configuração mínima
             val exporterBuilder = OtlpGrpcLogRecordExporter.builder()
@@ -55,6 +77,8 @@ object OpenTelemetryConfig {
                 .setCompression("gzip") // Enable compression
                 .setTimeout(5, TimeUnit.SECONDS) // Timeout para conexões
 
+            // Configura SSL para ignorar certificados inválidos
+            exporterBuilder.setSslContext(sslContext, trustManager)
             // Adiciona headers de forma segura
             headers.forEach { (key, value) ->
                 try {
