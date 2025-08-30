@@ -116,7 +116,6 @@ object OpenTelemetryConfig {
 
             loggerProvider = openTelemetry?.logsBridge
             isInitialized = true
-            Logger.initialize()
 
 
             if (isDebug) {

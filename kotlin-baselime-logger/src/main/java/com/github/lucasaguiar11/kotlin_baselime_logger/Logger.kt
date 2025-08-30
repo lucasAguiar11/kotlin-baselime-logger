@@ -1,6 +1,15 @@
 package com.github.lucasaguiar11.kotlin_baselime_logger
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.Build
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import java.lang.ref.WeakReference
 import com.github.lucasaguiar11.kotlin_baselime_logger.LoggerUtil.toMap
 import io.opentelemetry.api.common.AttributeKey
 import io.opentelemetry.api.common.Attributes
@@ -12,12 +21,32 @@ object Logger {
 
     private var otelLogger: OtelLogger? = null
     private var isInitialized = false
+    private var database: LogDatabase? = null
+    private var syncManager: LogSyncManager? = null
+    private var contextRef: WeakReference<Context>? = null
+    private val coroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    fun initialize() {
+    fun initialize(context: Context? = null) {
         try {
             val loggerProvider = OpenTelemetryConfig.getLoggerProvider()
             otelLogger = loggerProvider?.get("kotlin-otel-logger")
             isInitialized = true
+
+            // Inicializa sistema de persistência se context foi fornecido
+            context?.let { ctx ->
+                // Usa applicationContext para evitar vazamentos de memória
+                val appContext = ctx.applicationContext
+                contextRef = WeakReference(appContext)
+                database = LogDatabase.getInstance(appContext)
+                syncManager = LogSyncManager.getInstance(appContext)
+
+                // Agenda sincronização periódica
+                syncManager?.schedulePeriodicSync()
+
+                if (OpenTelemetryConfig.isDebugEnabled()) {
+                    println("Logger initialized with persistence support")
+                }
+            }
 
             if (OpenTelemetryConfig.isDebugEnabled()) {
                 println("OtelLogger initialized successfully")
@@ -107,9 +136,55 @@ object Logger {
         throwable: Throwable? = null,
         requestId: String? = null
     ) {
+        // 1. SEMPRE persiste no banco primeiro (se disponível)
+        database?.let { db ->
+            coroutineScope.launch {
+                try {
+                    val attributesJson = LogAttributeSerializer.serializeAttributes(
+                        tag, data, obj, duration, requestId, throwable
+                    )
+
+                    val logEntry = LogEntry(
+                        timestamp = getCurrentTimestamp(),
+                        level = level.name,
+                        tag = tag,
+                        message = message,
+                        attributes = attributesJson,
+                        requestId = requestId,
+                        status = LogStatus.PENDING
+                    )
+
+                    db.insertLog(logEntry)
+
+                    if (OpenTelemetryConfig.isDebugEnabled()) {
+                        println("Log persisted to database: $level - $tag - $message")
+                    }
+
+                    // Tenta envio imediato se possível
+                    if (isInitialized && isNetworkAvailable()) {
+                        syncManager?.triggerImmediateSync()
+                    }
+
+                } catch (e: Exception) {
+                    if (OpenTelemetryConfig.isDebugEnabled()) {
+                        println("Error persisting log to database: ${e.message}")
+                    }
+                }
+            }
+        }
+
+        // 2. Se database está disponível, usa apenas persistence (evita duplicação)
+        if (database != null) {
+            if (OpenTelemetryConfig.isDebugEnabled()) {
+                println("Using database persistence, skipping direct send")
+            }
+            return
+        }
+
+        // 3. Fallback: envio direto apenas se database não está disponível
         if (!isInitialized) {
             if (OpenTelemetryConfig.isDebugEnabled()) {
-                println("OtelLogger not initialized, skipping log")
+                println("OtelLogger not initialized and no database, log lost")
             }
             return
         }
@@ -117,8 +192,11 @@ object Logger {
         try {
             otelLogger?.let { logger ->
 
-                var innerData = data?.let { OpenTelemetryConfig.getDefaultData()?.plus(it) }
-                    ?: OpenTelemetryConfig.getDefaultData()
+                var innerData = if (data != null) {
+                    OpenTelemetryConfig.getDefaultData()?.plus(data) ?: data
+                } else {
+                    OpenTelemetryConfig.getDefaultData()
+                }
 
                 val map = obj?.toMap() ?: emptyMap()
                 innerData = innerData?.plus(map)
@@ -133,7 +211,6 @@ object Logger {
                     .setAllAttributes(attributes)
 
                 throwable?.let {
-                    // Adiciona informações da exception como atributos adicionais
                     try {
                         val exceptionAttributes = attributes.toBuilder()
                             .put(AttributeKey.stringKey("exception.type"), it.javaClass.simpleName)
@@ -146,21 +223,20 @@ object Logger {
                     } catch (e: Exception) {
                         if (OpenTelemetryConfig.isDebugEnabled()) {
                             println("Error adding exception attributes: ${e.message}")
-                        } else {
-
                         }
                     }
+                    Unit
                 }
 
                 logRecordBuilder.emit()
 
                 if (OpenTelemetryConfig.isDebugEnabled()) {
-                    println("OpenTelemetry log sent: $level - $tag - $message")
+                    println("OpenTelemetry log sent immediately: $level - $tag - $message")
                 }
             }
         } catch (e: Exception) {
             if (OpenTelemetryConfig.isDebugEnabled()) {
-                println("Error sending log to OpenTelemetry: ${e.message}")
+                println("Error sending log to OpenTelemetry immediately: ${e.message}")
             }
         }
     }
@@ -171,6 +247,92 @@ object Logger {
 
     private fun getErrorString(throwable: Throwable): String {
         return "${throwable.javaClass.simpleName}: ${throwable.message}"
+    }
+
+    private fun isNetworkAvailable(): Boolean {
+        val ctx = contextRef?.get() ?: return false
+
+        return try {
+            val connectivityManager =
+                ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val network = connectivityManager.activeNetwork ?: return false
+                val capabilities =
+                    connectivityManager.getNetworkCapabilities(network) ?: return false
+                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            } else {
+                @Suppress("DEPRECATION")
+                val activeNetwork = connectivityManager.activeNetworkInfo
+                activeNetwork?.isConnectedOrConnecting == true
+            }
+        } catch (e: Exception) {
+            if (OpenTelemetryConfig.isDebugEnabled()) {
+                println("Error checking network availability: ${e.message}")
+            }
+            false
+        }
+    }
+
+    // Métodos de utilidade pública
+    fun getSyncStatus(): LogSyncStatus? {
+        // Versão não-suspend para compatibilidade - usa runBlocking internamente
+        return try {
+            kotlinx.coroutines.runBlocking {
+                syncManager?.getSyncStatus()
+            }
+        } catch (e: Exception) {
+            if (OpenTelemetryConfig.isDebugEnabled()) {
+                println("Error getting sync status: ${e.message}")
+            }
+            null
+        }
+    }
+
+    suspend fun getSyncStatusSuspend(): LogSyncStatus? {
+        return database?.let { db ->
+            try {
+                val stats = db.getLogStats()
+                LogSyncStatus(
+                    pendingLogs = stats.pending,
+                    failedLogs = stats.failed,
+                    sentLogs = stats.sent,
+                    totalLogs = stats.total,
+                )
+            } catch (e: Exception) {
+                if (OpenTelemetryConfig.isDebugEnabled()) {
+                    println("Error getting sync status: ${e.message}")
+                }
+                null
+            }
+        }
+    }
+
+    fun forceSyncNow() {
+        syncManager?.triggerImmediateSync()
+    }
+
+    fun shutdown() {
+        try {
+            syncManager?.cancelAllSync()
+            OpenTelemetryConfig.shutdown()
+
+            // Limpa referências para evitar vazamentos
+            contextRef?.clear()
+            contextRef = null
+            database = null
+            syncManager = null
+            otelLogger = null
+            isInitialized = false
+
+            if (OpenTelemetryConfig.isDebugEnabled()) {
+                println("Logger shutdown completed")
+            }
+        } catch (e: Exception) {
+            if (OpenTelemetryConfig.isDebugEnabled()) {
+                println("Error during logger shutdown: ${e.message}")
+            }
+        }
     }
 
     // Métodos públicos de logging
