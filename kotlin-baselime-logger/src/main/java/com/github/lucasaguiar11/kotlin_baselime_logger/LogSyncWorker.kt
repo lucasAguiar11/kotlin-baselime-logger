@@ -22,7 +22,6 @@ class LogSyncWorker(
 ) : CoroutineWorker(context, params) {
     
     private val database = LogDatabase.getInstance(context)
-    private val syncManager = LogSyncManager.getInstance(context)
     private val gson = Gson()
     
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {

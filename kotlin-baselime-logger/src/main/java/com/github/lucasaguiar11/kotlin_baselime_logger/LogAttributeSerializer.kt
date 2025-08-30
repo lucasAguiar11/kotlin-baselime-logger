@@ -61,13 +61,4 @@ object LogAttributeSerializer {
             ))
         }
     }
-    
-    fun getPriorityFromLevel(level: LoggerLevel): LogPriority {
-        return when (level) {
-            LoggerLevel.TRACE, LoggerLevel.DEBUG -> LogPriority.LOW
-            LoggerLevel.INFO -> LogPriority.NORMAL  
-            LoggerLevel.WARN -> LogPriority.NORMAL
-            LoggerLevel.ERROR -> LogPriority.HIGH
-        }
-    }
 }

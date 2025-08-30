@@ -51,9 +51,3 @@ enum class LogStatus {
     DELETED     // Marcado para exclusão
 }
 
-enum class LogPriority {
-    LOW,        // Logs debug/trace - podem aguardar
-    NORMAL,     // Logs info/warn - envio normal
-    HIGH,       // Logs error/crash - prioridade alta
-    CRITICAL    // Logs de crash fatal - envio imediato
-}

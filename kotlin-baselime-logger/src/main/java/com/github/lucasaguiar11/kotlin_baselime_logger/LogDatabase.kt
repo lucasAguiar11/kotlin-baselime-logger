@@ -82,21 +82,6 @@ class LogDatabase private constructor(context: Context) {
             }
         }
     }
-
-    suspend fun markAsSent(ids: List<Long>) {
-        if (ids.isEmpty()) return
-
-        try {
-            withContext(Dispatchers.IO) {
-                logDao.markAsSent(ids)
-            }
-        } catch (e: Exception) {
-            if (OpenTelemetryConfig.isDebugEnabled()) {
-                println("Error marking logs as sent: ${e.message}")
-            }
-        }
-    }
-
     suspend fun deleteSentLogsBefore(cutoffTime: Long): Int {
         return try {
             withContext(Dispatchers.IO) {
@@ -146,33 +131,6 @@ class LogDatabase private constructor(context: Context) {
                 println("Error getting log stats: ${e.message}")
             }
             LogStats()
-        }
-    }
-
-    // Métodos adicionais do Room para funcionalidades extras
-    suspend fun getLogsByRequestId(requestId: String): List<LogEntry> {
-        return try {
-            withContext(Dispatchers.IO) {
-                logDao.getLogsByRequestId(requestId)
-            }
-        } catch (e: Exception) {
-            if (OpenTelemetryConfig.isDebugEnabled()) {
-                println("Error getting logs by request ID: ${e.message}")
-            }
-            emptyList()
-        }
-    }
-
-    suspend fun getLogsByLevelSince(level: String, since: Long, limit: Int = 100): List<LogEntry> {
-        return try {
-            withContext(Dispatchers.IO) {
-                logDao.getLogsByLevelSince(level, since, limit)
-            }
-        } catch (e: Exception) {
-            if (OpenTelemetryConfig.isDebugEnabled()) {
-                println("Error getting logs by level: ${e.message}")
-            }
-            emptyList()
         }
     }
 }

@@ -68,27 +68,6 @@ class LogSyncManager private constructor(private val context: Context) {
         }
     }
 
-    fun scheduleRetry(delayMillis: Long) {
-        val constraints = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
-            .build()
-
-        val retryRequest = OneTimeWorkRequestBuilder<LogSyncWorker>()
-            .setConstraints(constraints)
-            .setInitialDelay(delayMillis, TimeUnit.MILLISECONDS)
-            .build()
-
-        workManager.enqueueUniqueWork(
-            WORK_NAME_RETRY,
-            ExistingWorkPolicy.REPLACE,
-            retryRequest
-        )
-
-        if (OpenTelemetryConfig.isDebugEnabled()) {
-            println("Scheduled log sync retry in ${delayMillis}ms")
-        }
-    }
-
     fun cancelAllSync() {
         workManager.cancelUniqueWork(WORK_NAME_PERIODIC)
         workManager.cancelUniqueWork(WORK_NAME_IMMEDIATE)
