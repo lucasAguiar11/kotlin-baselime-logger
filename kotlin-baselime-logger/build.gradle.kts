@@ -67,6 +67,9 @@ dependencies {
 
     // Para logs especificamente
     implementation("io.opentelemetry:opentelemetry-sdk-logs:1.32.0")
+
+    // Para traces especificamente
+    implementation("io.opentelemetry:opentelemetry-sdk-trace:1.32.0")
     
     // WorkManager para sincronização em background
     implementation("androidx.work:work-runtime-ktx:2.9.0")

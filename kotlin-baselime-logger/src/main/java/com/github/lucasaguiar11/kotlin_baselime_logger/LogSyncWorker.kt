@@ -9,6 +9,8 @@ import io.opentelemetry.api.common.AttributeKey
 import io.opentelemetry.api.common.Attributes
 import io.opentelemetry.api.logs.Logger as OtelLogger
 import io.opentelemetry.api.logs.Severity
+import io.opentelemetry.api.trace.Tracer as OtelTracer
+import io.opentelemetry.api.trace.StatusCode
 import kotlinx.coroutines.*
 import java.net.ConnectException
 import java.net.SocketTimeoutException
@@ -27,52 +29,81 @@ class LogSyncWorker(
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
             if (OpenTelemetryConfig.isDebugEnabled()) {
-                println("LogSyncWorker: Starting log sync...")
+                println("LogSyncWorker: Starting logs and traces sync...")
             }
-            
+
             // Verifica se o OpenTelemetry está inicializado
             val loggerProvider = OpenTelemetryConfig.getLoggerProvider()
-            if (loggerProvider == null) {
+            val tracerProvider = OpenTelemetryConfig.getTracerProvider()
+            if (loggerProvider == null && tracerProvider == null) {
                 if (OpenTelemetryConfig.isDebugEnabled()) {
                     println("LogSyncWorker: OpenTelemetry not initialized, skipping sync")
                 }
                 return@withContext Result.success()
             }
-            
-            val otelLogger = loggerProvider.get("kotlin-otel-logger")
+
+            val otelLogger = loggerProvider?.get("kotlin-otel-logger")
+            val otelTracer = tracerProvider?.get("kotlin-otel-tracer")
             var totalProcessed = 0
             var successCount = 0
             var failureCount = 0
-            
+
             // Processa logs pendentes em lotes
-            do {
-                val pendingLogs = database.getPendingLogs(limit = 50)
-                if (pendingLogs.isEmpty()) break
-                
-                for (logEntry in pendingLogs) {
-                    try {
-                        database.updateLogStatus(logEntry.id, LogStatus.SENDING)
-                        sendLogToOtel(otelLogger, logEntry)
-                        database.updateLogStatus(logEntry.id, LogStatus.SENT)
-                        successCount++
-                    } catch (e: Exception) {
-                        handleLogFailure(logEntry, e)
-                        failureCount++
+            otelLogger?.let { logger ->
+                do {
+                    val pendingLogs = database.getPendingLogs(limit = 50)
+                    if (pendingLogs.isEmpty()) break
+
+                    for (logEntry in pendingLogs) {
+                        try {
+                            database.updateLogStatus(logEntry.id, LogStatus.SENDING)
+                            sendLogToOtel(logger, logEntry)
+                            database.updateLogStatus(logEntry.id, LogStatus.SENT)
+                            successCount++
+                        } catch (e: Exception) {
+                            handleLogFailure(logEntry, e)
+                            failureCount++
+                        }
+                        totalProcessed++
                     }
-                    totalProcessed++
-                }
-                
-                // Evita sobrecarga - pausa entre lotes
-                if (pendingLogs.size >= 50) {
-                    delay(100)
-                }
-                
-            } while (pendingLogs.size >= 50 && totalProcessed < 500) // Limite máximo por execução
-            
-            // Processa logs para retry
-            processRetryLogs(otelLogger)
-            
-            // Limpeza de logs antigos
+
+                    // Evita sobrecarga - pausa entre lotes
+                    if (pendingLogs.size >= 50) {
+                        delay(100)
+                    }
+
+                } while (pendingLogs.size >= 50 && totalProcessed < 500) // Limite máximo por execução
+
+                // Processa logs para retry
+                processRetryLogs(logger)
+            }
+
+            // Processa traces pendentes em lotes
+            otelTracer?.let { tracer ->
+                do {
+                    val pendingTraces = database.getPendingTraces(limit = 50)
+                    if (pendingTraces.isEmpty()) break
+
+                    for (traceEntry in pendingTraces) {
+                        try {
+                            sendTraceToOtel(tracer, traceEntry)
+                            successCount++
+                        } catch (e: Exception) {
+                            handleTraceFailure(traceEntry, e)
+                            failureCount++
+                        }
+                        totalProcessed++
+                    }
+
+                    // Evita sobrecarga - pausa entre lotes
+                    if (pendingTraces.size >= 50) {
+                        delay(100)
+                    }
+
+                } while (pendingTraces.size >= 50 && totalProcessed < 500) // Limite máximo por execução
+            }
+
+            // Limpeza de logs e traces antigos
             performCleanup()
             
             if (OpenTelemetryConfig.isDebugEnabled()) {
@@ -120,6 +151,69 @@ class LogSyncWorker(
             .setAllAttributes(attributes)
         
         logRecordBuilder.emit()
+    }
+
+    private suspend fun sendTraceToOtel(otelTracer: OtelTracer, traceEntry: TraceEntry) {
+        try {
+            val attributes = deserializeAttributes(traceEntry.attributes)
+
+            // Cria span no OpenTelemetry
+            val spanBuilder = otelTracer.spanBuilder(traceEntry.operationName)
+
+            // Configura timestamps
+            spanBuilder.setStartTimestamp(traceEntry.startTime, TimeUnit.MILLISECONDS)
+
+            // Adiciona atributos
+            spanBuilder.setAllAttributes(attributes)
+
+            val span = spanBuilder.startSpan()
+
+            // Define status baseado no trace status
+            when (traceEntry.status) {
+                TraceStatus.ENDED_SUCCESS -> span.setStatus(StatusCode.OK)
+                TraceStatus.ENDED_ERROR -> span.setStatus(StatusCode.ERROR, traceEntry.statusMessage ?: "Operation failed")
+                else -> span.setStatus(StatusCode.OK)
+            }
+
+            // Define end timestamp se disponível
+            traceEntry.endTime?.let { endTime ->
+                span.end(endTime, TimeUnit.MILLISECONDS)
+            } ?: span.end()
+
+            // Marca como enviado
+            database.updateTraceStatus(traceEntry.id, TraceStatus.SENT)
+
+        } catch (e: Exception) {
+            throw e // Re-lança para ser tratado pelo handler de falha
+        }
+    }
+
+    private suspend fun handleTraceFailure(traceEntry: TraceEntry, exception: Exception) {
+        val newRetryCount = traceEntry.retryCount + 1
+        val maxRetries = 5
+        val errorMessage = "${exception.javaClass.simpleName}: ${exception.message}"
+
+        when {
+            newRetryCount >= maxRetries -> {
+                database.updateTraceStatus(traceEntry.id, TraceStatus.FAILED, errorMessage)
+                if (OpenTelemetryConfig.isDebugEnabled()) {
+                    println("Trace ${traceEntry.id} failed permanently after $maxRetries retries: $errorMessage")
+                }
+            }
+            isTemporaryError(exception) -> {
+                database.updateTraceRetryCount(traceEntry.id, newRetryCount)
+                val retryDelay = calculateRetryDelay(newRetryCount)
+                if (OpenTelemetryConfig.isDebugEnabled()) {
+                    println("Trace ${traceEntry.id} failed (retry $newRetryCount), will retry in ${retryDelay}ms: $errorMessage")
+                }
+            }
+            else -> {
+                database.updateTraceStatus(traceEntry.id, TraceStatus.FAILED, errorMessage)
+                if (OpenTelemetryConfig.isDebugEnabled()) {
+                    println("Trace ${traceEntry.id} failed permanently (non-retryable error): $errorMessage")
+                }
+            }
+        }
     }
     
     private fun deserializeAttributes(attributesJson: String): Attributes {

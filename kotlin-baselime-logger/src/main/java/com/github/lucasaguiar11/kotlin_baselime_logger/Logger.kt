@@ -15,11 +15,15 @@ import io.opentelemetry.api.common.AttributeKey
 import io.opentelemetry.api.common.Attributes
 import io.opentelemetry.api.logs.Logger as OtelLogger
 import io.opentelemetry.api.logs.Severity
+import io.opentelemetry.api.trace.Tracer as OtelTracer
+import io.opentelemetry.api.trace.Span
+import io.opentelemetry.api.trace.StatusCode
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 object Logger {
-
     private var otelLogger: OtelLogger? = null
+    private var otelTracer: OtelTracer? = null
     private var isInitialized = false
     private var database: LogDatabase? = null
     private var syncManager: LogSyncManager? = null
@@ -29,7 +33,9 @@ object Logger {
     fun initialize(context: Context? = null) {
         try {
             val loggerProvider = OpenTelemetryConfig.getLoggerProvider()
+            val tracerProvider = OpenTelemetryConfig.getTracerProvider()
             otelLogger = loggerProvider?.get("kotlin-otel-logger")
+            otelTracer = tracerProvider?.get("kotlin-otel-tracer")
             isInitialized = true
 
             // Inicializa sistema de persistência se context foi fornecido
@@ -49,7 +55,7 @@ object Logger {
             }
 
             if (OpenTelemetryConfig.isDebugEnabled()) {
-                println("OtelLogger initialized successfully")
+                println("OtelLogger and OtelTracer initialized successfully")
             }
         } catch (e: Exception) {
             if (OpenTelemetryConfig.isDebugEnabled()) {
@@ -323,6 +329,7 @@ object Logger {
             database = null
             syncManager = null
             otelLogger = null
+            otelTracer = null
             isInitialized = false
 
             if (OpenTelemetryConfig.isDebugEnabled()) {
@@ -332,6 +339,282 @@ object Logger {
             if (OpenTelemetryConfig.isDebugEnabled()) {
                 println("Error during logger shutdown: ${e.message}")
             }
+        }
+    }
+
+    // MÉTODOS DE TRACING
+
+    fun startSpan(
+        operationName: String,
+        attributes: Map<String, Any>? = null,
+        parentContext: SpanContext? = null,
+        customStartTimeMs: Long? = null
+    ): SpanContext {
+        val traceId = UUID.randomUUID().toString()
+        val spanId = UUID.randomUUID().toString()
+        val startTime = customStartTimeMs ?: System.currentTimeMillis()
+
+        try {
+            // 1. SEMPRE persiste no banco primeiro (se disponível)
+            var databaseId: Long? = null
+            database?.let { db ->
+                coroutineScope.launch {
+                    try {
+                        val attributesJson = LogAttributeSerializer.serializeTraceAttributes(
+                            operationName, attributes, parentContext?.spanId
+                        )
+
+                        val traceEntry = TraceEntry(
+                            traceId = traceId,
+                            spanId = spanId,
+                            parentSpanId = parentContext?.spanId,
+                            operationName = operationName,
+                            startTime = startTime,
+                            endTime = null,
+                            attributes = attributesJson,
+                            status = TraceStatus.ACTIVE
+                        )
+
+                        val id = db.insertTrace(traceEntry)
+                        if (OpenTelemetryConfig.isDebugEnabled()) {
+                            println("Trace persisted to database: $operationName (ID: $id)")
+                        }
+                    } catch (e: Exception) {
+                        if (OpenTelemetryConfig.isDebugEnabled()) {
+                            println("Error persisting trace to database: ${e.message}")
+                        }
+                    }
+                }
+            }
+
+            // 2. Cria span OpenTelemetry se disponível
+            var otelSpan: Span? = null
+            if (isInitialized) {
+                try {
+                    otelTracer?.let { tracer ->
+                        val spanBuilder = tracer.spanBuilder(operationName)
+
+                        // Define parent se fornecido
+                        parentContext?.span?.let { parentSpan ->
+                            spanBuilder.setParent(io.opentelemetry.context.Context.current().with(parentSpan))
+                        }
+
+                        // Adiciona atributos
+                        attributes?.forEach { (key, value) ->
+                            when (value) {
+                                is String -> spanBuilder.setAttribute(key, value)
+                                is Long -> spanBuilder.setAttribute(key, value)
+                                is Double -> spanBuilder.setAttribute(key, value)
+                                is Boolean -> spanBuilder.setAttribute(key, value)
+                                is Int -> spanBuilder.setAttribute(key, value.toLong())
+                                is Float -> spanBuilder.setAttribute(key, value.toDouble())
+                                else -> spanBuilder.setAttribute(key, value.toString())
+                            }
+                        }
+
+                        // Define timestamp customizado se fornecido
+                        if (customStartTimeMs != null) {
+                            val instant = java.time.Instant.ofEpochMilli(customStartTimeMs)
+                            otelSpan = spanBuilder.setStartTimestamp(instant).startSpan()
+                        } else {
+                            otelSpan = spanBuilder.startSpan()
+                        }
+
+                        if (OpenTelemetryConfig.isDebugEnabled()) {
+                            println("OpenTelemetry span started: $operationName")
+                        }
+                    }
+                } catch (e: Exception) {
+                    if (OpenTelemetryConfig.isDebugEnabled()) {
+                        println("Error creating OpenTelemetry span: ${e.message}")
+                    }
+                }
+            }
+
+            return SpanContext(
+                traceId = traceId,
+                spanId = spanId,
+                parentSpanId = parentContext?.spanId,
+                span = otelSpan,
+                databaseId = databaseId,
+                customStartTimeMs = customStartTimeMs,
+                actualStartTimeMs = startTime,
+                operationName = operationName,
+                originalAttributes = attributes,
+                parentContext = parentContext
+            )
+
+        } catch (e: Exception) {
+            if (OpenTelemetryConfig.isDebugEnabled()) {
+                println("Error starting span: ${e.message}")
+            }
+            return SpanContext(traceId = traceId, spanId = spanId, parentSpanId = parentContext?.spanId, actualStartTimeMs = startTime, operationName = operationName, originalAttributes = attributes, parentContext = parentContext)
+        }
+    }
+
+    fun startSpan(
+        operationName: String,
+        attributes: Map<String, Any>? = null,
+        parentContext: SpanContext? = null
+    ): SpanContext {
+        return startSpan(operationName, attributes, parentContext, null)
+    }
+
+    fun endSpan(
+        spanContext: SpanContext,
+        attributes: Map<String, Any>? = null,
+        status: SpanStatus = SpanStatus.OK
+    ) {
+        // Usa timestamp customizado de fim se fornecido, senão calcula baseado no tempo real
+        val endTime = spanContext.customEndTimeMs ?: System.currentTimeMillis()
+
+        // Calcula duração para atributos usando os timestamps corretos
+        val startTimeForCalculation = spanContext.customStartTimeMs ?: spanContext.actualStartTimeMs
+        val calculatedDurationMs = endTime - startTimeForCalculation
+
+        try {
+            // 1. Atualiza no banco se disponível
+            database?.let { db ->
+                coroutineScope.launch {
+                    try {
+                        // Adiciona duração calculada aos atributos
+                        val enrichedAttributes = attributes?.toMutableMap() ?: mutableMapOf()
+                        enrichedAttributes["duration_ms"] = calculatedDurationMs
+
+                        val finalAttributes = LogAttributeSerializer.serializeTraceAttributes(
+                            null, enrichedAttributes, null
+                        )
+
+                        val traceStatus = if (status == SpanStatus.OK) TraceStatus.ENDED_SUCCESS else TraceStatus.ENDED_ERROR
+                        val statusMessage = if (status == SpanStatus.ERROR) "Operation failed" else null
+
+                        // Busca trace pelo spanId e atualiza
+                        val trace = db.getTraceBySpanId(spanContext.spanId)
+                        trace?.let {
+                            db.updateTraceEnd(
+                                id = it.id,
+                                endTime = endTime,
+                                attributes = finalAttributes,
+                                status = traceStatus,
+                                statusMessage = statusMessage
+                            )
+
+                            if (OpenTelemetryConfig.isDebugEnabled()) {
+                                println("Trace ended in database: ${it.operationName}")
+                            }
+
+                            // Tenta envio imediato se possível
+                            if (isInitialized && isNetworkAvailable()) {
+                                syncManager?.triggerImmediateSync()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        if (OpenTelemetryConfig.isDebugEnabled()) {
+                            println("Error ending trace in database: ${e.message}")
+                        }
+                    }
+                }
+            }
+
+            // 2. Finaliza span OpenTelemetry se disponível - VERSÃO SIMPLIFICADA
+            spanContext.span?.let { span ->
+                try {
+                    // Adiciona duração calculada aos atributos
+                    val enrichedAttributes = attributes?.toMutableMap() ?: mutableMapOf()
+                    enrichedAttributes["duration_ms"] = calculatedDurationMs
+
+                    // Adiciona atributos finais
+                    enrichedAttributes.forEach { (key, value) ->
+                        when (value) {
+                            is String -> span.setAttribute(key, value)
+                            is Long -> span.setAttribute(key, value)
+                            is Double -> span.setAttribute(key, value)
+                            is Boolean -> span.setAttribute(key, value)
+                            is Int -> span.setAttribute(key, value.toLong())
+                            is Float -> span.setAttribute(key, value.toDouble())
+                            else -> span.setAttribute(key, value.toString())
+                        }
+                    }
+
+                    // Define status final
+                    when (status) {
+                        SpanStatus.OK -> span.setStatus(StatusCode.OK)
+                        SpanStatus.ERROR -> span.setStatus(StatusCode.ERROR)
+                    }
+
+                    // Finaliza span com timestamp customizado se fornecido, senão usa timestamp atual
+                    if (spanContext.customEndTimeMs != null) {
+                        val instant = java.time.Instant.ofEpochMilli(spanContext.customEndTimeMs)
+                        span.end(instant)
+                    } else {
+                        span.end()
+                    }
+
+                    if (OpenTelemetryConfig.isDebugEnabled()) {
+                        println("OpenTelemetry span ended with status: $status, duration: ${calculatedDurationMs}ms")
+                    }
+                } catch (e: Exception) {
+                    if (OpenTelemetryConfig.isDebugEnabled()) {
+                        println("Error ending OpenTelemetry span: ${e.message}")
+                    }
+                }
+            }
+
+        } catch (e: Exception) {
+            if (OpenTelemetryConfig.isDebugEnabled()) {
+                println("Error ending span: ${e.message}")
+            }
+        }
+    }
+
+    fun addSpanEvent(
+        spanContext: SpanContext,
+        eventName: String,
+        attributes: Map<String, Any>? = null
+    ) {
+        try {
+            spanContext.span?.let { span ->
+                val eventAttributes = io.opentelemetry.api.common.Attributes.builder()
+
+                attributes?.forEach { (key, value) ->
+                    when (value) {
+                        is String -> eventAttributes.put(AttributeKey.stringKey(key), value)
+                        is Long -> eventAttributes.put(AttributeKey.longKey(key), value)
+                        is Double -> eventAttributes.put(AttributeKey.doubleKey(key), value)
+                        is Boolean -> eventAttributes.put(AttributeKey.booleanKey(key), value)
+                        is Int -> eventAttributes.put(AttributeKey.longKey(key), value.toLong())
+                        is Float -> eventAttributes.put(AttributeKey.doubleKey(key), value.toDouble())
+                        else -> eventAttributes.put(AttributeKey.stringKey(key), value.toString())
+                    }
+                }
+
+                span.addEvent(eventName, eventAttributes.build())
+
+                if (OpenTelemetryConfig.isDebugEnabled()) {
+                    println("Event added to span: $eventName")
+                }
+            }
+        } catch (e: Exception) {
+            if (OpenTelemetryConfig.isDebugEnabled()) {
+                println("Error adding span event: ${e.message}")
+            }
+        }
+    }
+
+    inline fun <T> traceOperation(
+        operationName: String,
+        attributes: Map<String, Any>? = null,
+        parentContext: SpanContext? = null,
+        block: (SpanContext) -> T
+    ): T {
+        val spanContext = startSpan(operationName, attributes, parentContext)
+        return try {
+            val result = block(spanContext)
+            endSpan(spanContext, null, SpanStatus.OK)
+            result
+        } catch (e: Exception) {
+            endSpan(spanContext, mapOf("error.message" to e.message.orEmpty()), SpanStatus.ERROR)
+            throw e
         }
     }
 
