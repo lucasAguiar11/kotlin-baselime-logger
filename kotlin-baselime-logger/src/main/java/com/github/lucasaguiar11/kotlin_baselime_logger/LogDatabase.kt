@@ -108,6 +108,81 @@ class LogDatabase private constructor(context: Context) {
         }
     }
 
+    suspend fun insertTrace(traceEntry: TraceEntry): Long {
+        return try {
+            withContext(Dispatchers.IO) {
+                logDao.insertTrace(traceEntry)
+            }
+        } catch (e: Exception) {
+            if (OpenTelemetryConfig.isDebugEnabled()) {
+                println("Error inserting trace to database: ${e.message}")
+            }
+            -1L
+        }
+    }
+
+    suspend fun getTraceBySpanId(spanId: String): TraceEntry? {
+        return try {
+            withContext(Dispatchers.IO) {
+                logDao.getTraceBySpanId(spanId)
+            }
+        } catch (e: Exception) {
+            if (OpenTelemetryConfig.isDebugEnabled()) {
+                println("Error reading trace by span ID: ${e.message}")
+            }
+            null
+        }
+    }
+
+    suspend fun updateTraceEnd(id: Long, endTime: Long, attributes: String?, status: TraceStatus, statusMessage: String? = null) {
+        try {
+            withContext(Dispatchers.IO) {
+                logDao.updateTraceEnd(id, endTime, attributes, status, statusMessage)
+            }
+        } catch (e: Exception) {
+            if (OpenTelemetryConfig.isDebugEnabled()) {
+                println("Error updating trace end: ${e.message}")
+            }
+        }
+    }
+
+    suspend fun getPendingTraces(limit: Int = 100): List<TraceEntry> {
+        return try {
+            withContext(Dispatchers.IO) {
+                logDao.getPendingTraces(limit)
+            }
+        } catch (e: Exception) {
+            if (OpenTelemetryConfig.isDebugEnabled()) {
+                println("Error reading pending traces: ${e.message}")
+            }
+            emptyList()
+        }
+    }
+
+    suspend fun updateTraceStatus(id: Long, status: TraceStatus, errorMessage: String? = null) {
+        try {
+            withContext(Dispatchers.IO) {
+                logDao.updateTraceStatus(id, status, errorMessage)
+            }
+        } catch (e: Exception) {
+            if (OpenTelemetryConfig.isDebugEnabled()) {
+                println("Error updating trace status: ${e.message}")
+            }
+        }
+    }
+
+    suspend fun updateTraceRetryCount(id: Long, retryCount: Int) {
+        try {
+            withContext(Dispatchers.IO) {
+                logDao.updateTraceRetryCount(id, retryCount)
+            }
+        } catch (e: Exception) {
+            if (OpenTelemetryConfig.isDebugEnabled()) {
+                println("Error updating trace retry count: ${e.message}")
+            }
+        }
+    }
+
     suspend fun getLogStats(): LogStats {
         return try {
             withContext(Dispatchers.IO) {

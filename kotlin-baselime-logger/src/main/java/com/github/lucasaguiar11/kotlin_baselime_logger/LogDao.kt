@@ -90,9 +90,95 @@ interface LogDao {
     
     @Query("SELECT * FROM logs WHERE level = :level AND created_at >= :since ORDER BY created_at DESC LIMIT :limit")
     suspend fun getLogsByLevelSince(level: String, since: Long, limit: Int = 100): List<LogEntry>
+
+    // TRACE METHODS
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertTrace(traceEntry: TraceEntry): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertTraces(traces: List<TraceEntry>): List<Long>
+
+    @Query("""
+        SELECT * FROM traces
+        WHERE status IN ('PENDING', 'FAILED')
+        ORDER BY start_time ASC
+        LIMIT :limit
+    """)
+    suspend fun getPendingTraces(limit: Int = 100): List<TraceEntry>
+
+    @Query("""
+        SELECT * FROM traces
+        WHERE status = 'FAILED'
+        AND retry_count < 5
+        AND (last_retry_at IS NULL OR last_retry_at < :currentTime)
+        ORDER BY created_at ASC
+        LIMIT 50
+    """)
+    suspend fun getTracesForRetry(currentTime: Long): List<TraceEntry>
+
+    @Query("UPDATE traces SET status = :status, error_message = :errorMessage, last_retry_at = :currentTime WHERE id = :id")
+    suspend fun updateTraceStatus(id: Long, status: TraceStatus, errorMessage: String? = null, currentTime: Long = System.currentTimeMillis())
+
+    @Query("UPDATE traces SET retry_count = :retryCount, last_retry_at = :currentTime, status = 'FAILED' WHERE id = :id")
+    suspend fun updateTraceRetryCount(id: Long, retryCount: Int, currentTime: Long = System.currentTimeMillis())
+
+    @Query("UPDATE traces SET end_time = :endTime, attributes = :attributes, status = :status, status_message = :statusMessage WHERE id = :id")
+    suspend fun updateTraceEnd(id: Long, endTime: Long, attributes: String?, status: TraceStatus, statusMessage: String? = null)
+
+    @Query("UPDATE traces SET status = 'SENT' WHERE id IN (:ids)")
+    suspend fun markTracesAsSent(ids: List<Long>)
+
+    @Query("DELETE FROM traces WHERE status = 'SENT' AND created_at < :cutoffTime")
+    suspend fun deleteSentTracesBefore(cutoffTime: Long): Int
+
+    @Query("""
+        DELETE FROM traces
+        WHERE id NOT IN (
+            SELECT id FROM traces
+            WHERE status = 'FAILED'
+            ORDER BY created_at DESC
+            LIMIT :keepCount
+        ) AND status = 'FAILED'
+    """)
+    suspend fun deleteOldestFailedTraces(keepCount: Int): Int
+
+    @Query("""
+        SELECT
+            status,
+            COUNT(*) as count
+        FROM traces
+        GROUP BY status
+    """)
+    suspend fun getTraceStatsCounts(): List<TraceStatusCount>
+
+    @Query("SELECT COUNT(*) FROM traces WHERE status = :status")
+    suspend fun getTraceCountByStatus(status: TraceStatus): Int
+
+    @Query("SELECT COUNT(*) FROM traces")
+    suspend fun getTotalTraceCount(): Int
+
+    @Query("DELETE FROM traces WHERE id = :id")
+    suspend fun deleteTrace(id: Long)
+
+    @Query("DELETE FROM traces WHERE status = 'DELETED'")
+    suspend fun deleteMarkedTraces(): Int
+
+    @Update
+    suspend fun updateTrace(traceEntry: TraceEntry)
+
+    @Query("SELECT * FROM traces WHERE trace_id = :traceId ORDER BY start_time ASC")
+    suspend fun getTracesByTraceId(traceId: String): List<TraceEntry>
+
+    @Query("SELECT * FROM traces WHERE span_id = :spanId LIMIT 1")
+    suspend fun getTraceBySpanId(spanId: String): TraceEntry?
 }
 
 data class LogStatusCount(
     val status: LogStatus,
+    val count: Int
+)
+
+data class TraceStatusCount(
+    val status: TraceStatus,
     val count: Int
 )

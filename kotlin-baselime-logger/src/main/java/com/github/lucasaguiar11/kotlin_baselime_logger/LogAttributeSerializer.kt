@@ -61,4 +61,41 @@ object LogAttributeSerializer {
             ))
         }
     }
+
+    fun serializeTraceAttributes(
+        operationName: String?,
+        attributes: Map<String, Any>?,
+        parentSpanId: String?
+    ): String {
+        val attributeMap = mutableMapOf<String, Any>()
+
+        try {
+            // Operation name
+            operationName?.let { attributeMap["operation.name"] = it }
+
+            // Parent span ID for tracing hierarchy
+            parentSpanId?.let { attributeMap["parent.span_id"] = it }
+
+            // Merge default data from OpenTelemetry config
+            OpenTelemetryConfig.getDefaultData()?.let { defaultData ->
+                attributeMap.putAll(defaultData)
+            }
+
+            // Custom attributes
+            attributes?.let { attributeMap.putAll(it) }
+
+            return gson.toJson(attributeMap)
+
+        } catch (e: Exception) {
+            if (OpenTelemetryConfig.isDebugEnabled()) {
+                println("Error serializing trace attributes: ${e.message}")
+            }
+            // Fallback: pelo menos tenta salvar o básico
+            return gson.toJson(mapOf(
+                "operation.name" to (operationName ?: "unknown"),
+                "error" to "trace_serialization_failed",
+                "error_message" to e.message
+            ))
+        }
+    }
 }
