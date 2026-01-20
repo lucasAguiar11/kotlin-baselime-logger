@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
@@ -12,16 +13,83 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import com.github.lucasaguiar11.kotlin_baselime_logger.ui.theme.KotlinbaselimeloggerTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.lang.Thread.sleep
 import java.util.UUID
 
 data class User(val name: String, val age: Int)
 
 class MainActivity : ComponentActivity() {
+
+    private fun generateLoad(totalRecords: Int = 50) {
+        val half = (totalRecords / 2).coerceAtLeast(1)
+
+        Logger.i("BatchTest", "Iniciando geração de carga... total=$totalRecords")
+
+        // 1) Logs
+        repeat(half) { i ->
+            Logger.i(
+                "BatchTest-LOG",
+                "load log #${i + 1}/$half",
+                mapOf(
+                    "load.kind" to "log",
+                    "load.index" to (i + 1),
+                    "load.total" to half
+                )
+            )
+        }
+        Logger.i("BatchTest", "Carga gerada de $half registros (logs)")
+
+        // 2) Traces
+        val traceCount = totalRecords - half
+        repeat(traceCount) { i ->
+            Logger.traceOperation(
+                operationName = "batch_test_operation",
+                attributes = mapOf(
+                    "load.kind" to "trace",
+                    "load.index" to (i + 1),
+                    "load.total" to traceCount
+                )
+            ) {
+                // operação bem curta só para gerar spans
+            }
+        }
+        Logger.i("BatchTest", "Carga gerada de $traceCount registros (traces)")
+
+        Logger.i("BatchTest", "Carga total gerada: $totalRecords registros")
+    }
+
+    private fun enqueueBatchSend() {
+        Logger.i("BatchTest", "Envio de lote solicitado (WorkManager)")
+
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+
+        val request = OneTimeWorkRequestBuilder<LogSyncWorker>()
+            .setConstraints(constraints)
+            .build()
+
+        WorkManager.getInstance(this)
+            .enqueueUniqueWork(
+                "otel_log_sync",
+                ExistingWorkPolicy.KEEP,
+                request
+            )
+
+        Logger.i("BatchTest", "Envio de lote enfileirado")
+    }
 
     fun runExampleLogger() {
         val user = User("Lucas", 30)
@@ -173,7 +241,6 @@ class MainActivity : ComponentActivity() {
                 status = SpanStatus.OK
             }
 
-            // ✅ Confirm - filho do SDK Window
             sdkWindow.childSpan("sdk.transaction.confirm") {
                 duration = 500 // 500ms
                 attributes = mapOf(
@@ -198,11 +265,21 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
 
         // Inicializa OpenTelemetry
+//        OpenTelemetryConfig.configure(
+//            endpoint = "http://srv574063.hstgr.cloud:4517",
+//            serviceName = "kotlin-otel-logger-sample",
+//            serviceVersion = BuildConfig.VERSION_NAME,
+//            isDebug = true,
+//        )
+
         OpenTelemetryConfig.configure(
-            endpoint = "http://srv574063.hstgr.cloud:4517",
-            serviceName = "kotlin-otel-logger-sample",
+            endpoint = "https://ingest.us.signoz.cloud:443",
+            serviceName = "appdex_bocdex",
             serviceVersion = BuildConfig.VERSION_NAME,
-            isDebug = true,
+            isDebug = false,
+            headers = mapOf(
+                "signoz-ingestion-key" to "675c5b3c-6e99-454b-a7d0-c7329256cc03"
+            )
         )
 
         // Inicializa Logger com persistência
@@ -223,6 +300,9 @@ class MainActivity : ComponentActivity() {
                 ) {
                     Column {
                         Greeting("Android")
+
+                        val scope = rememberCoroutineScope()
+
                         Button(
                             onClick = {
                                 Logger.i(
@@ -234,6 +314,34 @@ class MainActivity : ComponentActivity() {
                                 .height(50.dp)
                         ) {
                             Text("Log Message")
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Button(
+                            onClick = {
+                                scope.launch(Dispatchers.Default) {
+                                    generateLoad(totalRecords = 50)
+                                }
+                            },
+                            modifier = Modifier
+                                .width(220.dp)
+                                .height(50.dp)
+                        ) {
+                            Text("Gerar carga (50)")
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Button(
+                            onClick = {
+                                enqueueBatchSend()
+                            },
+                            modifier = Modifier
+                                .width(220.dp)
+                                .height(50.dp)
+                        ) {
+                            Text("Enviar lote")
                         }
                     }
                 }
