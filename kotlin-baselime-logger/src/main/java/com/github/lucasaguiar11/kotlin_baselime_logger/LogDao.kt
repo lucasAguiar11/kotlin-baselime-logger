@@ -26,7 +26,7 @@ interface LogDao {
             created_at ASC 
         LIMIT :limit
     """)
-    suspend fun getPendingLogs(limit: Int = 100): List<LogEntry>
+    suspend fun getPendingLogs(limit: Int): List<LogEntry>
     
     @Query("""
         SELECT * FROM logs 

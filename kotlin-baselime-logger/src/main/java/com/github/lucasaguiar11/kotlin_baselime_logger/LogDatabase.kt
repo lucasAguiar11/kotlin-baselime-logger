@@ -33,7 +33,7 @@ class LogDatabase private constructor(context: Context) {
         }
     }
 
-    suspend fun getPendingLogs(limit: Int = 100): List<LogEntry> {
+    suspend fun getPendingLogs(limit: Int): List<LogEntry> {
         return try {
             withContext(Dispatchers.IO) {
                 logDao.getPendingLogs(limit)

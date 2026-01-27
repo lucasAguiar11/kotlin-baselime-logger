@@ -25,7 +25,17 @@ class LogSyncWorker(
     
     private val database = LogDatabase.getInstance(context)
     private val gson = Gson()
-    
+
+    private val batchSize: Int =
+        inputData.getInt(LogSyncWorkerKeys.BATCH_SIZE, 100)
+
+    private val maxPerExecution: Int =
+        inputData.getInt(LogSyncWorkerKeys.MAX_PER_EXECUTION, 500)
+
+    private val delayBetweenBatchesMs: Long =
+        inputData.getLong(LogSyncWorkerKeys.DELAY_BETWEEN_BATCHES, 100L)
+
+
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
             if (OpenTelemetryConfig.isDebugEnabled()) {
@@ -51,7 +61,7 @@ class LogSyncWorker(
             // Processa logs pendentes em lotes
             otelLogger?.let { logger ->
                 do {
-                    val pendingLogs = database.getPendingLogs(limit = 50)
+                    val pendingLogs = database.getPendingLogs(batchSize)
                     if (pendingLogs.isEmpty()) break
 
                     // 1) marca como SENDING (emit() apenas enfileira no batch do SDK)
@@ -93,11 +103,11 @@ class LogSyncWorker(
                     totalProcessed += pendingLogs.size
 
                     // Evita sobrecarga - pausa entre lotes
-                    if (pendingLogs.size >= 50) {
-                        delay(100)
+                    if (pendingLogs.size >= batchSize) {
+                        delay(delayBetweenBatchesMs)
                     }
 
-                } while (pendingLogs.size >= 50 && totalProcessed < 500) // Limite máximo por execução
+                } while (pendingLogs.size >= batchSize && totalProcessed < maxPerExecution) // Limite máximo por execução
 
                 // Processa logs para retry
                 processRetryLogs(logger)
@@ -409,4 +419,10 @@ class LogSyncWorker(
             }
         }
     }
+}
+
+object LogSyncWorkerKeys {
+    const val BATCH_SIZE = "batch_size"
+    const val MAX_PER_EXECUTION = "max_per_execution"
+    const val DELAY_BETWEEN_BATCHES = "delay_between_batches"
 }

@@ -5,7 +5,7 @@ import androidx.work.*
 import java.util.concurrent.TimeUnit
 import kotlin.math.pow
 
-class LogSyncManager private constructor(private val context: Context) {
+class LogSyncManager private constructor(private val context: Context, private val config: LoggerConfig) {
 
     companion object {
         private const val WORK_NAME_PERIODIC = "log_sync_periodic"
@@ -15,14 +15,15 @@ class LogSyncManager private constructor(private val context: Context) {
         @Volatile
         private var INSTANCE: LogSyncManager? = null
 
-        fun getInstance(context: Context): LogSyncManager {
+        fun getInstance(context: Context, loggerConfig: LoggerConfig): LogSyncManager {
             return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: LogSyncManager(context.applicationContext).also { INSTANCE = it }
+                INSTANCE ?: LogSyncManager(context.applicationContext, loggerConfig).also { INSTANCE = it }
             }
         }
     }
 
     private val workManager = WorkManager.getInstance(context)
+
 
     fun schedulePeriodicSync() {
         val constraints = Constraints.Builder()
