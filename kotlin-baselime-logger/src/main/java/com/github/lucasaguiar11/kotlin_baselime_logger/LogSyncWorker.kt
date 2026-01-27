@@ -54,18 +54,43 @@ class LogSyncWorker(
                     val pendingLogs = database.getPendingLogs(limit = 50)
                     if (pendingLogs.isEmpty()) break
 
+                    // 1) marca como SENDING (emit() apenas enfileira no batch do SDK)
+                    pendingLogs.forEach { database.updateLogStatus(it.id, LogStatus.SENDING) }
+
+                    // 2) emite todos
+                    val emittedIds = mutableListOf<Long>()
+                    val failures = mutableListOf<Pair<LogEntry, Exception>>()
+
                     for (logEntry in pendingLogs) {
                         try {
-                            database.updateLogStatus(logEntry.id, LogStatus.SENDING)
                             sendLogToOtel(logger, logEntry)
-                            database.updateLogStatus(logEntry.id, LogStatus.SENT)
-                            successCount++
+                            emittedIds += logEntry.id
                         } catch (e: Exception) {
-                            handleLogFailure(logEntry, e)
+                            failures += logEntry to e
+                        }
+                    }
+
+                    // 3) força flush para garantir export do lote antes de marcar como SENT
+                    val flushed = OpenTelemetryConfig.forceFlushLogs(timeoutMs = 10_000)
+                    if (flushed) {
+                        emittedIds.forEach { id ->
+                            database.updateLogStatus(id, LogStatus.SENT)
+                            successCount++
+                        }
+                    } else {
+                        emittedIds.forEach { id ->
+                            val entry = pendingLogs.first { it.id == id }
+                            handleLogFailure(entry, RuntimeException("OTel logs forceFlush failed/timeout"))
                             failureCount++
                         }
-                        totalProcessed++
                     }
+
+                    failures.forEach { (entry, ex) ->
+                        handleLogFailure(entry, ex)
+                        failureCount++
+                    }
+
+                    totalProcessed += pendingLogs.size
 
                     // Evita sobrecarga - pausa entre lotes
                     if (pendingLogs.size >= 50) {
@@ -84,16 +109,43 @@ class LogSyncWorker(
                     val pendingTraces = database.getPendingTraces(limit = 50)
                     if (pendingTraces.isEmpty()) break
 
+                    // 1) marca como SENDING
+                    pendingTraces.forEach { database.updateTraceStatus(it.id, TraceStatus.SENDING) }
+
+                    // 2) cria/finaliza spans (end()) - isso enfileira no batch do SDK
+                    val endedIds = mutableListOf<Long>()
+                    val traceFailures = mutableListOf<Pair<TraceEntry, Exception>>()
+
                     for (traceEntry in pendingTraces) {
                         try {
                             sendTraceToOtel(tracer, traceEntry)
-                            successCount++
+                            endedIds += traceEntry.id
                         } catch (e: Exception) {
-                            handleTraceFailure(traceEntry, e)
+                            traceFailures += traceEntry to e
+                        }
+                    }
+
+                    // 3) flush do tracer provider antes de marcar como SENT
+                    val flushed = OpenTelemetryConfig.forceFlushTraces(timeoutMs = 10_000)
+                    if (flushed) {
+                        endedIds.forEach { id ->
+                            database.updateTraceStatus(id, TraceStatus.SENT)
+                            successCount++
+                        }
+                    } else {
+                        endedIds.forEach { id ->
+                            val entry = pendingTraces.first { it.id == id }
+                            handleTraceFailure(entry, RuntimeException("OTel traces forceFlush failed/timeout"))
                             failureCount++
                         }
-                        totalProcessed++
                     }
+
+                    traceFailures.forEach { (entry, ex) ->
+                        handleTraceFailure(entry, ex)
+                        failureCount++
+                    }
+
+                    totalProcessed += pendingTraces.size
 
                     // Evita sobrecarga - pausa entre lotes
                     if (pendingTraces.size >= 50) {
@@ -123,6 +175,14 @@ class LogSyncWorker(
     private suspend fun processRetryLogs(otelLogger: OtelLogger) {
         val currentTime = System.currentTimeMillis()
         val retryLogs = database.getLogsForRetry(currentTime)
+
+        if (retryLogs.isEmpty()) return
+
+        // Marca como SENDING (emissão enfileira no batch)
+        retryLogs.forEach { database.updateLogStatus(it.id, LogStatus.SENDING) }
+
+        val emittedIds = mutableListOf<Long>()
+        val failures = mutableListOf<Pair<LogEntry, Exception>>()
         
         for (logEntry in retryLogs) {
             val retryDelay = calculateRetryDelay(logEntry.retryCount)
@@ -130,14 +190,25 @@ class LogSyncWorker(
             
             if (currentTime >= nextRetryTime) {
                 try {
-                    database.updateLogStatus(logEntry.id, LogStatus.SENDING)
                     sendLogToOtel(otelLogger, logEntry)
-                    database.updateLogStatus(logEntry.id, LogStatus.SENT)
+                    emittedIds += logEntry.id
                 } catch (e: Exception) {
-                    handleLogFailure(logEntry, e)
+                    failures += logEntry to e
                 }
             }
         }
+
+        val flushed = OpenTelemetryConfig.forceFlushLogs(timeoutMs = 10_000)
+        if (flushed) {
+            emittedIds.forEach { id -> database.updateLogStatus(id, LogStatus.SENT) }
+        } else {
+            emittedIds.forEach { id ->
+                val entry = retryLogs.first { it.id == id }
+                handleLogFailure(entry, RuntimeException("OTel logs forceFlush failed/timeout"))
+            }
+        }
+
+        failures.forEach { (entry, ex) -> handleLogFailure(entry, ex) }
     }
     
     private fun sendLogToOtel(otelLogger: OtelLogger, logEntry: LogEntry) {
@@ -179,9 +250,6 @@ class LogSyncWorker(
             traceEntry.endTime?.let { endTime ->
                 span.end(endTime, TimeUnit.MILLISECONDS)
             } ?: span.end()
-
-            // Marca como enviado
-            database.updateTraceStatus(traceEntry.id, TraceStatus.SENT)
 
         } catch (e: Exception) {
             throw e // Re-lança para ser tratado pelo handler de falha

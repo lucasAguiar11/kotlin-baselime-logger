@@ -19,6 +19,8 @@ object OpenTelemetryConfig {
     private var openTelemetry: OpenTelemetry? = null
     private var loggerProvider: LoggerProvider? = null
     private var tracerProvider: TracerProvider? = null
+    private var sdkLoggerProvider: SdkLoggerProvider? = null
+    private var sdkTracerProvider: SdkTracerProvider? = null
     private var isDebug = false
     private var isInitialized = false
     private var defaultData: Map<String, Any>? = null
@@ -112,6 +114,8 @@ object OpenTelemetryConfig {
                 .addLogRecordProcessor(batchProcessor)
                 .build()
 
+            this.sdkLoggerProvider = sdkLoggerProvider
+
             if (isDebug) println("Logger provider created")
 
             // Cria span exporter com mesmas configurações
@@ -148,6 +152,8 @@ object OpenTelemetryConfig {
                 .setResource(resource)
                 .addSpanProcessor(spanProcessor)
                 .build()
+
+            this.sdkTracerProvider = sdkTracerProvider
 
             if (isDebug) println("Tracer provider created")
 
@@ -188,6 +194,39 @@ object OpenTelemetryConfig {
     fun isInitialized(): Boolean = isInitialized
 
     fun isDebugEnabled(): Boolean = isDebug
+
+    /**
+     * Forces the OpenTelemetry SDK to flush queued log records.
+     *
+     * Note: emitting a log (emit()) only enqueues it into the Batch processor.
+     * Use this to ensure the batch is exported before marking items as SENT.
+     */
+    fun forceFlushLogs(timeoutMs: Long = 10_000): Boolean {
+        return try {
+            val provider = sdkLoggerProvider ?: return true
+            val result = provider.forceFlush()
+            result.join(timeoutMs, TimeUnit.MILLISECONDS)
+            result.isSuccess
+        } catch (e: Exception) {
+            if (isDebug) println("forceFlushLogs failed: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Forces the OpenTelemetry SDK to flush queued spans.
+     */
+    fun forceFlushTraces(timeoutMs: Long = 10_000): Boolean {
+        return try {
+            val provider = sdkTracerProvider ?: return true
+            val result = provider.forceFlush()
+            result.join(timeoutMs, TimeUnit.MILLISECONDS)
+            result.isSuccess
+        } catch (e: Exception) {
+            if (isDebug) println("forceFlushTraces failed: ${e.message}")
+            false
+        }
+    }
 
     fun shutdown() {
         if (!isInitialized) return
