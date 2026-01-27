@@ -29,6 +29,7 @@ object Logger {
     private var syncManager: LogSyncManager? = null
     private var contextRef: WeakReference<Context>? = null
     private val coroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var loggerConfig: LoggerConfig = LoggerConfig()
 
     fun initialize(context: Context? = null) {
         try {
@@ -44,7 +45,12 @@ object Logger {
                 val appContext = ctx.applicationContext
                 contextRef = WeakReference(appContext)
                 database = LogDatabase.getInstance(appContext)
-                syncManager = LogSyncManager.getInstance(appContext)
+                //syncManager = LogSyncManager.getInstance(appContext)
+                syncManager = LogSyncManager.getInstance(
+                    appContext,
+                    loggerConfig
+                )
+
 
                 // Agenda sincronização periódica
                 syncManager?.schedulePeriodicSync()
@@ -64,6 +70,17 @@ object Logger {
             isInitialized = false
         }
     }
+
+    fun configure(config: LoggerConfig) {
+        loggerConfig = config.copy(
+            batchSize = config.batchSize.coerceIn(1, config.maxPerRun)
+        )
+
+        if (OpenTelemetryConfig.isDebugEnabled()) {
+            println("Logger configured: $loggerConfig")
+        }
+    }
+
 
     private fun mapLoggerLevelToSeverity(level: LoggerLevel): Severity {
         return when (level) {

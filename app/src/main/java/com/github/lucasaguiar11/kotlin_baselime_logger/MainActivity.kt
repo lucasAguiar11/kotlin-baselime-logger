@@ -284,6 +284,7 @@ class MainActivity : ComponentActivity() {
         )
 
         // Inicializa Logger com persistência
+        Logger.configure(LoggerConfig(batchSize = 100, maxPerRun = 1000))
         Logger.initialize(this)
 
 
