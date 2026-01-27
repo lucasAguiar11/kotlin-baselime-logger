@@ -33,7 +33,6 @@ data class User(val name: String, val age: Int)
 class MainActivity : ComponentActivity() {
 
     private fun generateLoad(totalRecords: Int) {
-        //val half = (totalRecords / 2).coerceAtLeast(1)
 
         Logger.i("BatchTest", "Iniciando geração de carga... total=$totalRecords")
 
@@ -50,23 +49,6 @@ class MainActivity : ComponentActivity() {
             )
         }
         Logger.i("BatchTest", "Carga gerada de $totalRecords registros (logs)")
-
-// Removido para teste apenas de logs
-//        // 2) Traces
-//        val traceCount = totalRecords - half
-//        repeat(traceCount) { i ->
-//            Logger.traceOperation(
-//                operationName = "batch_test_operation",
-//                attributes = mapOf(
-//                    "load.kind" to "trace",
-//                    "load.index" to (i + 1),
-//                    "load.total" to traceCount
-//                )
-//            ) {
-//                // operação bem curta só para gerar spans
-//            }
-//        }
-        //Logger.i("BatchTest", "Carga gerada de $traceCount registros (traces)")
 
         Logger.i("BatchTest", "Carga total gerada: $totalRecords registros")
     }
@@ -266,21 +248,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
 
         // Inicializa OpenTelemetry
-//        OpenTelemetryConfig.configure(
-//            endpoint = "http://srv574063.hstgr.cloud:4517",
-//            serviceName = "kotlin-otel-logger-sample",
-//            serviceVersion = BuildConfig.VERSION_NAME,
-//            isDebug = true,
-//        )
-
         OpenTelemetryConfig.configure(
-            endpoint = "https://ingest.us.signoz.cloud:443",
-            serviceName = "appdex_bocdex",
+            endpoint = "http://srv574063.hstgr.cloud:4517",
+            serviceName = "kotlin-otel-logger-sample",
             serviceVersion = BuildConfig.VERSION_NAME,
-            isDebug = false,
-            headers = mapOf(
-                "signoz-ingestion-key" to "675c5b3c-6e99-454b-a7d0-c7329256cc03"
-            )
+            isDebug = true,
         )
 
         // Inicializa Logger com persistência
