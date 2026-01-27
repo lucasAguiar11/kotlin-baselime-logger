@@ -32,40 +32,41 @@ data class User(val name: String, val age: Int)
 
 class MainActivity : ComponentActivity() {
 
-    private fun generateLoad(totalRecords: Int = 50) {
-        val half = (totalRecords / 2).coerceAtLeast(1)
+    private fun generateLoad(totalRecords: Int) {
+        //val half = (totalRecords / 2).coerceAtLeast(1)
 
         Logger.i("BatchTest", "Iniciando geração de carga... total=$totalRecords")
 
         // 1) Logs
-        repeat(half) { i ->
+        repeat(totalRecords) { i ->
             Logger.i(
                 "BatchTest-LOG",
-                "load log #${i + 1}/$half",
+                "[ activationCode: 516565013 | document: 52196079000171 | model: P2-A11 | processor: aditum] dt=2026-01-22T19:07:27.799 | screen=MainActivity | class=MainViewModel | function=navigateToPaymentActivity | file=MainViewModel.kt | line=80 | thread=main | kind=DEBUG | debug test batch #${i + 1}/$totalRecords",
                 mapOf(
                     "load.kind" to "log",
                     "load.index" to (i + 1),
-                    "load.total" to half
+                    "load.total" to totalRecords
                 )
             )
         }
-        Logger.i("BatchTest", "Carga gerada de $half registros (logs)")
+        Logger.i("BatchTest", "Carga gerada de $totalRecords registros (logs)")
 
-        // 2) Traces
-        val traceCount = totalRecords - half
-        repeat(traceCount) { i ->
-            Logger.traceOperation(
-                operationName = "batch_test_operation",
-                attributes = mapOf(
-                    "load.kind" to "trace",
-                    "load.index" to (i + 1),
-                    "load.total" to traceCount
-                )
-            ) {
-                // operação bem curta só para gerar spans
-            }
-        }
-        Logger.i("BatchTest", "Carga gerada de $traceCount registros (traces)")
+// Removido para teste apenas de logs
+//        // 2) Traces
+//        val traceCount = totalRecords - half
+//        repeat(traceCount) { i ->
+//            Logger.traceOperation(
+//                operationName = "batch_test_operation",
+//                attributes = mapOf(
+//                    "load.kind" to "trace",
+//                    "load.index" to (i + 1),
+//                    "load.total" to traceCount
+//                )
+//            ) {
+//                // operação bem curta só para gerar spans
+//            }
+//        }
+        //Logger.i("BatchTest", "Carga gerada de $traceCount registros (traces)")
 
         Logger.i("BatchTest", "Carga total gerada: $totalRecords registros")
     }
@@ -316,8 +317,6 @@ class MainActivity : ComponentActivity() {
                             Text("Log Message")
                         }
 
-                        Spacer(modifier = Modifier.height(12.dp))
-
                         Button(
                             onClick = {
                                 scope.launch(Dispatchers.Default) {
@@ -329,6 +328,51 @@ class MainActivity : ComponentActivity() {
                                 .height(50.dp)
                         ) {
                             Text("Gerar carga (50)")
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Button(
+                            onClick = {
+                                scope.launch(Dispatchers.Default) {
+                                    generateLoad(totalRecords = 100)
+                                }
+                            },
+                            modifier = Modifier
+                                .width(220.dp)
+                                .height(50.dp)
+                        ) {
+                            Text("Gerar carga (100)")
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Button(
+                            onClick = {
+                                scope.launch(Dispatchers.Default) {
+                                    generateLoad(totalRecords = 200)
+                                }
+                            },
+                            modifier = Modifier
+                                .width(220.dp)
+                                .height(50.dp)
+                        ) {
+                            Text("Gerar carga (200)")
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Button(
+                            onClick = {
+                                scope.launch(Dispatchers.Default) {
+                                    generateLoad(totalRecords = 1000)
+                                }
+                            },
+                            modifier = Modifier
+                                .width(220.dp)
+                                .height(50.dp)
+                        ) {
+                            Text("Gerar carga (1000)")
                         }
 
                         Spacer(modifier = Modifier.height(12.dp))
